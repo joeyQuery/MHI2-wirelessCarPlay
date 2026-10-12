@@ -49,7 +49,17 @@ sample Wi-Fi SSID and passphrase hard-coded in a test job.
 | 8 | [portability.md](portability.md) | Can MH2p binaries run on MU1329 / MU0678? Per-binary verdicts (P-470..P-478) |
 | 9 | [binaries.md](binaries.md) | Inventory with hashes; presence across MH2p / MU1329 / MU0678 |
 | 10 | [firmware.md](firmware.md) | Provenance, hashes, partition formats, how it was extracted |
-| 11 | [evidence.md](evidence.md) | All 109 `P-` entries in one register |
+| 11 | [evidence.md](evidence.md) | All 113 `P-` entries in one register |
+
+## Cross-references to independent research
+
+[harman-f/mhi2_altscreen_carplay](https://github.com/harman-f/mhi2_altscreen_carplay) independently studied
+Škoda **MU1440** (`ER SKG13 P4526`, QNX 6.5/ARM32) with Audi **MH2p P2711** as reference, and compared notes
+in joeyQuery/MHI2-Wireless-CarPlay **issue #2**. Where our P2873 evidence bears on their questions:
+[bluetooth-iap2.md §12](bluetooth-iap2.md) (transport-component numbers, the `0x5702 → 0x5703` layout and
+SecurityType, the Wireless-Identify gate, the raw-RFCOMM-vs-0x9999 agreement) and
+[airplay-dio.md §8](airplay-dio.md) (the P2873-vs-P2711 receiver axes). Their MU1440 receiver is `libairplay`
+210.81, the same generation as MHI2Q MU1329.
 
 ## Findings in brief
 
@@ -96,7 +106,8 @@ sample Wi-Fi SSID and passphrase hard-coded in a test job.
 ## Still open (across the folder)
 
 - Whether the Bluetooth iAP2 link stays up during the Wi-Fi session, and what `disableBluetooth` closes.
-- The 0x5703 byte encoding inside `libesoiap2.so`, and how the AP SSID/passphrase are generated and persisted.
+- How the AP SSID/passphrase are generated and persisted. (The 0x5703 *byte encoding* is now resolved:
+  Param 1 SSID, Param 2 passphrase, Param 3 SecurityType enum, Param 4 channel — P-327, P-328.)
 - Which coding value feeds `dio_manager`'s persistence key 8877.
 - Callers of `libairplay`'s packet/multicast socket helpers (STATUS Q6).
 - Whether MU0678's `btstack` and `libairplay.so` contain any of the MH2p pieces. This is the cheapest next

@@ -145,6 +145,17 @@ Transport components built by `FUN_00040b58`:
 - If the caller's flag byte `param_3+6` is set, also a **WirelessCarPlayTransportComponent id `0x62` (98)**,
   `ESO-CoW-Transport` (17 bytes, "CarPlay over WiFi").
 
+Re-confirmed by a fresh Ghidra decompile of `FUN_00040b58` (2026-10-12): the identifier is written as a
+`u16` at the component record (`*(u16*)(rec+3)`): `99` for Bluetooth, `0x61` (97) for USB device, and
+`0x62` (98) for the WirelessCarPlay component, the last emitted **only** when the flag byte `param_3+6`
+(`enableWirelessCarPlayFeatures`) is non-zero. These numbers are **accessory-assigned
+`TransportComponentIdentifier` values, specific to this ESO `libesoiap2` stack** — they are not fixed by
+the iAP2 protocol. A different stack assigns different numbers (MH2p's own Cinemo path reads
+`BT_TRANSPORT_COMPONENT_ID` from the metapool/config, `COMPONENTID_COUNT`, so it is config-driven; see §12
+for the cross-reference to harman-f's MU1440, which uses 17/24). What is protocol-significant is the
+component **type** (Bluetooth vs WirelessCarPlay) and the `enableWirelessCarPlayFeatures` gate, not the
+value. **[P-330]**
+
 The ESO BT stack uses iAP2 link parameters of its own (3000 ms retransmit, 700 ms cumulative ACK) that differ
 from the USB set (P-308). They are close to the Bluetooth profile in Apple's accessory spec, not to the
 zero-ACK wired profile.
@@ -168,6 +179,40 @@ zero-ACK wired profile.
 - `DeviceTransportIdentifierNotification` is used to merge the USB and Bluetooth identities of one phone:
   `Found existing deviceID=%i with same unique info as deviceID=%i`, `deviceID=%i is now known as
   deviceID=%i`.
+
+### 3.2 iAP2 Wi-Fi information-sharing messages (0x5700–0x5703) and the 0x5703 layout
+
+`CIAP2ControlSessionModuleWifiShare` in `libesoiap2.so` is the Wi-Fi information-sharing module. A fresh
+decompile (2026-10-12) gives the numeric message IDs and the on-the-wire layout of the credential reply —
+closing the repo's long-standing "0x5703 byte encoding" open item and matching the `0x5702 → 0x5703`
+exchange harman-f traced on MU1440. **[P-327, P-328]**
+
+- **Message IDs** (`process()` dispatcher `0x640cc`, `registerWifiInformationMessage()` `0x62da4`,
+  `accessoryWiFiConfigurationInformation()` `0x63020`):
+  - `0x5700` **StartWiFiInformationSharing** (registered receiver)
+  - `0x5701` **WiFiInformation** (phone → HU; `processWiFiInformation`)
+  - `0x5702` **RequestAccessoryWiFiConfigurationInformation** (phone → HU; `processRequestAccessoryWiFiConfigurationInformation`)
+  - `0x5703` **AccessoryWiFiConfigurationInformation** (HU → phone; built with `CIAP2ControlSessionMessage::setId(…, 0x5703)`)
+- **0x5703 parameters**, each an iAP2 control-session parameter with `setId(n)` (order as serialized):
+  | Param id | Field | Encoding |
+  | --- | --- | --- |
+  | 1 | Network name (SSID) | UTF-8 string, present flag |
+  | 2 | Passphrase | UTF-8 string, present flag |
+  | 3 | **SecurityType** | 1-byte enum `{0,1,2}`, present flag |
+  | 4 | Channel | 1 byte, present flag |
+- **SecurityType semantics.** The icm job `FUN_000431b8` (`onJob_iap2AccessoryWiFiConfigurationInformation`)
+  fills the message struct from SI's `SIAP2AccessoryWiFiConfigurationInformationParameter` and passes SI's
+  security enum straight through to Param 3 (`0→0, 1→1, 2→2`, present flag set). SI (P-309) derives that
+  enum from the live AP's crypto type (`WiFiAPInfoProvider` names `WEP64, WEP128, TKIP, AES_CCMP, WPA2_TKIP,
+  WPA2_AES_CCMP, WPA_TKIP_CCMP, WPA2_TKIP_CCMP`): the WPA/WPA2 (AES-CCMP family) classes map to **2**,
+  lower-security classes to **1**, open to **0**. MH2p's shipped AP is WPA2 (AES-CCMP), so the production
+  unit sends **SecurityType = 2** — the highest bucket. A parser that reads value 2 as *WEP* has it
+  inverted for this stack: 2 is the WPA/WPA2 bucket, not WEP. The input-side crypto→enum grouping is
+  OEM-internal and lossy, so SecurityType alone does not prove the exact cipher (this agrees with harman-f's
+  caution); what is firm is that a WPA2 AP is carried as **2**. **[P-328]**
+- **WirelessCarPlayUpdate.** `CIAP2ControlSessionModuleNotifications::processWirelessCarPlayUpdate`
+  (`0x599e8`) reads a single availability byte from its parameter and forwards it (log `WirelessCarplay
+  update: %d`), consistent with P-312. **[P-329]**
 
 ---
 
@@ -442,6 +487,28 @@ These are inferences; none of them is tested on MHI2 or MHI2Q.
 
 ---
 
+## 12. Cross-reference: harman-f's MU1440 / MH2p P2711 (issue #2)
+
+[harman-f](https://github.com/harman-f/mhi2_altscreen_carplay) independently researched classic Škoda
+**MHI2 ER SKG13 P4526 / MU1440** (QNX 6.5 / ARM32), with Audi **MH2p AUG35 P2711** as their newer reference,
+and asked (joeyQuery/MHI2-Wireless-CarPlay issue #2) how their findings line up with ours. Our MH2p baseline
+is **AUG33 P2873**. These are **different firmware images on different platforms**; the rows below say what
+our P2873 static evidence settles and what it cannot (we hold no P2711 or MU1440 image).
+
+| harman-f item (MU1440 / P2711) | What MH2p P2873 shows | Verdict |
+| --- | --- | --- |
+| Stock iAP2 recognises "transport-identification components 17 (BT) and 24 (Wireless CarPlay)" | Our ESO `libesoiap2` stack uses `TransportComponentIdentifier` **99 (BT), 98 (WirelessCarPlay), 97 (USB device)** (P-307, P-330). The Cinemo path reads `BT_TRANSPORT_COMPONENT_ID` from config. | **Not a conflict.** The identifier is an accessory-assigned `u16`, per-stack; 17/24 vs 99/98 is expected. The protocol-significant parts are the component **type** and the `enableWirelessCarPlayFeatures` gate. |
+| "Wireless Identify flag mismatch remains" in the WirelessCarPlay component | On P2873 the WirelessCarPlay component (id 98, name `ESO-CoW-Transport`, 17 bytes) is added to the Identify **only when the `enableWirelessCarPlayFeatures` flag is set** (icm `FUN_00040b58`, byte `param_3+6`); otherwise the Identify advertises BT + USB only (P-330). | Production ground truth for the gate: the WirelessCarPlay component is a normal iAP2 transport component (identifier + name), switched on by one upstream flag, not by a special transport-type byte. |
+| `0x5702 → 0x5703` credential exchange; "A3 parser can misclassify `Protocol=2` (WEP)" | Numeric IDs confirmed: 0x5700/0x5701/**0x5702**/**0x5703** (P-327). 0x5703 = {Param 1 SSID, Param 2 passphrase, Param 3 **SecurityType** 1-byte enum, Param 4 Channel} (P-328). Production WPA2 AP → **SecurityType = 2** (the top bucket; 1 and 0 are the lower-security / open buckets) (P-328). | Reading value 2 as *WEP* is inverted for this stack. We agree 0x5703 readiness alone does not prove the cipher; the firm fact is WPA2 → 2. |
+| Raw `IapDevice` RFCOMM bytes are **not** the stock `libiap2client ↔ ipod-drvr-iap2` `0x9999` ABI; they use a Type-3 bridge, not DIO's `iap2_connect` on a BT char device | Same conclusion: the BT node is a plain byte-stream resmgr; the 0x9999 ABI belongs to the USB-driver architecture; MH2p never points DIO at the BT node (Q12/Q13, P-303). MH2p's own "Type-3-equivalent" is the Cinemo `bt://` transport plugin `libEsoIAPTransport` (P-317). | Agreement. |
+| MU0678 `IapDeviceServices` pathname / active-device serialization (`cbRf`, `sp+0x150/0x154`); a live `0x5702` BT bootstrap | MU0678 not examined here; on MH2p the node is `/dev/iapDevice-<16 hex BT addr>` from `btstack` `updIapDevicePath` (P-303, P-305). No runtime capture (all static). | Reference only; the MU0678-specific serialization is for joeyQuery's trace. |
+| Receiver: MU1440 = `libairplay` **210.81**; Audi MH2P row = "newer `libairplay.so`" (no version) | Our P2873 receiver is **`AirPlay/320.17.1`** (P-400). 210.81 is the *same* generation as MHI2Q MU1329, with none of the wireless protocol code. | We supply the P2711-adjacent number: 320.17.1. See [airplay-dio.md](airplay-dio.md) for the full 320.17.1-vs-210.81 delta. |
+
+See [airplay-dio.md](airplay-dio.md) §8 for the P2873-vs-P2711 receiver axes (Controller Connect, peer-ID,
+Pair Setup/Verify, iAP-over-AirPlay).
+
+---
+
 ## Evidence
 
 | ID | Finding | Class | Status | Source |
@@ -473,3 +540,7 @@ These are inferences; none of them is tested on MHI2 or MHI2Q.
 | P-324 | No `CarPlayAvailability`/`CarPlayStartSession` names in any MH2p iAP2 stack; the flow is Wi-Fi config + `_carplay-ctrl` + CarPlayControl connect | Static | Proven (absence of names) / Inferred (flow) | string search of `libesoiap2`, `libNmeVfs`, `libNmeSDK`, `dio_manager`, SI, `iap2connectionmanager` |
 | P-325 | MH2p `iap` app is an ESO iAP2-over-BT client (`eso-Bt-iAP`, Wi-Fi AP sharing) with no launcher entry | Static / Config | Proven (strings, launcher config) / Inferred (dormant) | `app/eso/bin/apps/iap`; `connectivity.json`; `framework.json` |
 | P-326 | The `bluetooth` app serves `BluetoothSmartphoneIntegration` (modes incl. `CARPLAY_WIRELESS`, OOB pairing replies); `dio_manager` `CBluetoothController` uses it and falls back to `bt.fakeMacAddr` after 2000 ms | Static / Disassembly | Proven (strings, call sites) | `bluetooth` `FUN_0007cc90`; `dio_manager` `FUN_00093960`, `s_btInterfaceTimerHandler`; `dio_manager.json` `bt` |
+| P-327 | `libesoiap2` `CIAP2ControlSessionModuleWifiShare` uses numeric iAP2 message IDs 0x5700 StartWiFiInformationSharing, 0x5701 WiFiInformation (phone→HU), 0x5702 RequestAccessoryWiFiConfigurationInformation (phone→HU), 0x5703 AccessoryWiFiConfigurationInformation (HU→phone) | Disassembly | Proven | `libesoiap2.so` `process` `0x640cc`, `registerWifiInformationMessage` `0x62da4`, `accessoryWiFiConfigurationInformation` `0x63020` (Ghidra, fresh 2026-10-12) |
+| P-328 | 0x5703 carries Param 1 SSID, Param 2 passphrase, Param 3 SecurityType (1-byte enum), Param 4 channel; the icm builder passes SI's security enum through (0/1/2); 2 = WPA/WPA2 class (shipped WPA2 AP → 2), 1 = WEP class, 0 = open. SecurityType alone does not prove the cipher | Disassembly | Proven (layout, pass-through) / Partial (crypto→enum grouping is SI-internal) | `libesoiap2.so` `0x63020` (setId 1..4); `iap2connectionmanager` `FUN_000431b8` (`onJob_iap2AccessoryWiFiConfigurationInformation`, struct +0x3c..0x3f); SI `WiFiAPInfoProvider` crypto names `0xe394c`; P-309 |
+| P-329 | `CIAP2ControlSessionModuleNotifications::processWirelessCarPlayUpdate` reads a single availability byte and forwards it (`WirelessCarplay update: %d`) | Disassembly | Proven | `libesoiap2.so` `0x599e8` |
+| P-330 | Identify transport-component identifiers are accessory-assigned `u16`s set by `FUN_00040b58`: BT 99, USB device 97 (0x61), WirelessCarPlay 98 (0x62); the WirelessCarPlay component is written only when `enableWirelessCarPlayFeatures` (`param_3+6`) is set. Cinemo path uses config-driven `BT_TRANSPORT_COMPONENT_ID` | Disassembly | Proven | `iap2connectionmanager` `FUN_00040b58` (fresh decompile 2026-10-12, `=99` / `=0x61` / `=0x62` at the component records); `libNmeVfs.so` `BT_TRANSPORT_COMPONENT_ID`, `COMPONENTID_COUNT` |
