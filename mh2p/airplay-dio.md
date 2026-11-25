@@ -433,6 +433,33 @@ Inference (not proven for MHI2/MHI2Q):
 
 ---
 
+## 8. Cross-reference: P2873 vs P2711 receiver (issue #2)
+
+[harman-f](https://github.com/harman-f/mhi2_altscreen_carplay) (joeyQuery/MHI2-Wireless-CarPlay issue #2) asked
+whether there is a confirmed **P2873 vs P2711** difference in the Controller Connect method, peer-ID
+correlation, Pair Setup/Verify, or bidirectional iAP-over-AirPlay that would move the implementation boundary
+for classic MHI2. We hold **only P2873** (`AirPlay/320.17.1`), not P2711, so we cannot report a *difference*;
+what we can give is the exact P2873 behaviour on each axis to diff against P2711. harman-f's MU1440 target
+runs `libairplay` **210.81** — the same generation as MHI2Q MU1329 — and their P2711 reference is described
+only as a "newer `libairplay.so`" with no version. The fastest real comparison is the `AirPlay/<ver>` string
+in P2711's `libairplay.so`: if it is also 320.x, the receiver boundary is effectively identical to what we
+documented.
+
+| Axis | P2873 (confirmed) | How to diff against P2711 |
+| --- | --- | --- |
+| **Receiver version** | `AirPlay/320.17.1` (`libairplay.so` 0xc8094), GCC 4.9.2, Thumb-2 (P-400) | Compare the `AirPlay/<ver>` string. |
+| **Controller Connect** | Accessory-initiated: browse `_carplay-ctrl._tcp` (0xc7e7c) → `GET /ctrl-int/1/connect` (`/ctrl-int/1/%s` 0xc8074) with header `AirPlay-Receiver-Device-ID` (0xc80a8), 2 s timeout, scope-ID address, `wifi` flag toggling HTTPClient flags 0x104/0x4 (P-406, P-407). No 0x4300/0x4301 (P-324). | Same path expected if P2711 is 320.x. |
+| **peer-ID correlation** | The controller's Bonjour device ID is compared, as a Bluetooth MAC, with the target phone's BT MAC (`CarPlayControllerGetBluetoothMacAddress`, 5 retries); the HU's own `AirPlay-Receiver-Device-ID` is its deviceID, a MAC with bit 0 flipped (P-408, P-422, P-423). | Same key expected. |
+| **Pair Setup / Verify** | Implemented, not declarations-only: pair-setup client+server M1–M6 and pair-verify client+server M1–M4 state strings; SRP-3072/SHA-512, Ed25519, Curve25519, ChaCha20-Poly1305, HKDF-SHA512; keychain `/mnt/misc1/carplay/Library/KeyChains/carplay.keychain` (P-403). | If P2711 is 320.x, the HomeKit pair state machine is the same build family. |
+| **iAP-over-AirPlay** | `iAPSendMessage` command both ways (`AirPlayReceiverSessionSendiAPMessage` HU→phone; `handleSessionControl` phone→HU), **no stream 130/111** (P-410, P-411, P-412). | harman-f reports MU1440 has generic `POST /command` + `AirPlayReceiverSessionSendCommand` but no targeted `iAPSendMessage` DIO consumer — matching 210.81's gap. |
+
+The implementation-boundary point for classic MHI2 is unchanged by this comparison: the wireless-specific
+receiver code (HomeKit pairing, `_carplay-ctrl` connect, `iAPSendMessage`) lives in 320.x and is absent from
+210.81 (MU1329 and MU1440 alike). See [portability.md](portability.md) for why 320.17.1 is not a drop-in on
+either.
+
+---
+
 ## Evidence
 
 | ID | Finding | Class | Status | Source |
